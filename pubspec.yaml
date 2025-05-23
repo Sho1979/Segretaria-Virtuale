@@ -15,8 +15,10 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.6
 
+  # Supabase per backend
+  supabase_flutter: ^2.5.0
+
   # Dipendenze future da aggiungere:
-  # supabase_flutter: ^2.0.0
   # flutter_launcher_icons: ^0.13.1
   # shared_preferences: ^2.2.0
   # Altri pacchetti per funzionalità vocali offline
