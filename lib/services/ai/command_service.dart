@@ -328,15 +328,20 @@ class AICommandService {
         confidence: 0.95,
       ),
 
-      // Regola: Se ha lavorato >90 min senza pausa, suggerisci pausa
+      // Regola: Se ha lavorato >90 min senza pausa E non sta chiedendo altro esplicitamente
       ContextualRule(
         condition: (context, input) =>
         context.minutesWorkedToday > 90 &&
             (context.lastBreak == null ||
-                DateTime.now().difference(context.lastBreak!).inMinutes > 90),
+                DateTime.now().difference(context.lastBreak!).inMinutes > 90) &&
+            // IMPORTANTE: Applica SOLO se l'utente non sta chiedendo altro
+            (input.trim().isEmpty || // Input vuoto
+                input.toLowerCase().contains('pausa') || // O sta chiedendo esplicitamente una pausa
+                input.toLowerCase().contains('break') ||
+                input.toLowerCase().contains('riposo')),
         inferredCommand: CommandType.pauseReminder,
-        confidence: 0.9,
-        suggestion: "Hai lavorato per più di 90 minuti. È ora di una pausa!",
+        confidence: 0.7, // Ridotto da 0.9 a 0.7
+        suggestion: "Hai lavorato per più di 90 minuti. Ricordati di fare una pausa!",
       ),
 
       // Regola: Venerdì pomeriggio + "libero" = blocca tempo
@@ -351,7 +356,6 @@ class AICommandService {
       ),
     ]);
   }
-
   /// Parser principale con intelligenza avanzata
   Future<ParsedCommand> parseCommand(
       String input,
@@ -1424,7 +1428,7 @@ class AICommandService {
 
     return normalized;
   }
-  /// Applica regole contestuali
+  /// Applica regole contestuali SENZA sovrascrivere comandi espliciti
   Map<String, dynamic> _applyContextualRules(
       String input,
       UserContext context,
@@ -1432,20 +1436,34 @@ class AICommandService {
       ) {
     final adjustments = <String, dynamic>{};
 
+    // Controlla se c'è già un comando con alta confidenza
+    final topIntent = intentScores.entries
+        .where((e) => e.value > 0.6)
+        .toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    final hasStrongIntent = topIntent.isNotEmpty && topIntent.first.value > 0.7;
+
     for (var rule in _contextualRules) {
       if (rule.condition(context, input)) {
-        // Boost score per comando inferito
-        intentScores[rule.inferredCommand.toString()] =
-            (intentScores[rule.inferredCommand.toString()] ?? 0) + rule.confidence;
+        // Se c'è già un comando forte, aggiungi solo suggerimenti
+        if (hasStrongIntent && rule.inferredCommand == CommandType.pauseReminder) {
+          // NON cambiare il comando, ma aggiungi il suggerimento
+          adjustments['pauseSuggestion'] = rule.suggestion;
+          adjustments['shouldShowPauseReminder'] = true;
+          adjustments['minutesWorked'] = context.minutesWorkedToday;
+        } else if (!hasStrongIntent) {
+          // Solo se non c'è un comando chiaro, applica la regola
+          intentScores[rule.inferredCommand.toString()] =
+              (intentScores[rule.inferredCommand.toString()] ?? 0) + rule.confidence;
 
-        // Aggiungi parametri della regola
-        if (rule.parameters != null) {
-          adjustments.addAll(rule.parameters!);
-        }
+          if (rule.parameters != null) {
+            adjustments.addAll(rule.parameters!);
+          }
 
-        // Aggiungi suggerimento
-        if (rule.suggestion != null) {
-          adjustments['contextualSuggestion'] = rule.suggestion;
+          if (rule.suggestion != null) {
+            adjustments['contextualSuggestion'] = rule.suggestion;
+          }
         }
       }
     }

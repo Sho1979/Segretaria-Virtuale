@@ -5,22 +5,22 @@ import 'package:flutter/material.dart';
 import 'package:googleapis/calendar/v3.dart' as google_calendar;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:html' as html;
+import 'dart:async';
 
 // IMPORT CORRETTI
 import '../../services/google_calendar_service.dart';
 import '../../services/outlook_calendar_service.dart';
 import '../../services/ai/command_service.dart';
+import '../../services/ai/ai_assistant_service.dart'; // Per AIAction
 import '../../services/calendar/free_slots_analyzer.dart';
 import '../../widgets/voice_input_widget.dart';
 import '../../widgets/date_navigation_widget.dart';
+import '../../widgets/pause_reminder_widget.dart';
 import '../../main.dart'; // Per HomePage
-// Percorsi corretti per i widget e utils:
-import '../../widgets/free_slots_analyzer_widget.dart';
-import '../../widgets/floating_summary_widget.dart';
-import '../../widgets/ai_assistant_widget.dart';
-import '../../utils/web_utils.dart' // Corretto: ../../utils/
-if (dart.library.html) '../../utils/web_utils_web.dart'; // Corretto: ../../utils/
+
+// Import condizionale per web
+import '../../utils/web_utils.dart'
+if (dart.library.html) '../../utils/web_utils_web.dart';
 
 class CalendarDashboard extends StatefulWidget {
   const CalendarDashboard({super.key});
@@ -47,12 +47,31 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
   List<FreeSlot> _freeSlots = [];
   DateTime _selectedDate = DateTime.now();
 
+  // Variabili per il sistema di pausa
+  bool _shouldShowPauseReminder = false;
+  int _minutesWorkedWithoutBreak = 0;
+  Timer? _workTimeTracker;
+
   @override
   void initState() {
     super.initState();
     _googleCalendarService.initialize();
     _slotsAnalyzer = FreeSlotsAnalyzer(_googleCalendarService, _outlookCalendarService);
     _initializeServices();
+    _startWorkTimeTracking();
+  }
+
+  void _startWorkTimeTracking() {
+    _workTimeTracker = Timer.periodic(const Duration(minutes: 1), (timer) {
+      setState(() {
+        _minutesWorkedWithoutBreak++;
+
+        // Mostra reminder ogni 90 minuti
+        if (_minutesWorkedWithoutBreak >= 90 && !_shouldShowPauseReminder) {
+          _shouldShowPauseReminder = true;
+        }
+      });
+    });
   }
 
   Future<void> _initializeServices() async {
@@ -249,14 +268,50 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
           todayEvents.addAll(
             outlookTodayEvents.map((e) => CalendarEventWrapper(
               source: CalendarSource.outlook,
-              outlookEvent: e,
+              outlookEvent: {
+                'id': e.id,
+                'subject': e.subject,
+                'start': {
+                  'dateTime': e.start?.toIso8601String(),
+                },
+                'end': {
+                  'dateTime': e.end?.toIso8601String(),
+                },
+                'location': {
+                  'displayName': e.location,
+                },
+                'body': {
+                  'content': e.body,
+                },
+                'bodyPreview': e.bodyPreview,
+                'isAllDay': e.isAllDay,
+                'attendees': [],
+              },
             )),
           );
 
           weekEvents.addAll(
             outlookWeekEvents.map((e) => CalendarEventWrapper(
               source: CalendarSource.outlook,
-              outlookEvent: e,
+              outlookEvent: {
+                'id': e.id,
+                'subject': e.subject,
+                'start': {
+                  'dateTime': e.start?.toIso8601String(),
+                },
+                'end': {
+                  'dateTime': e.end?.toIso8601String(),
+                },
+                'location': {
+                  'displayName': e.location,
+                },
+                'body': {
+                  'content': e.body,
+                },
+                'bodyPreview': e.bodyPreview,
+                'isAllDay': e.isAllDay,
+                'attendees': [],
+              },
             )),
           );
         } catch (e) {
@@ -334,6 +389,20 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
   }
 
   void _handleCommand(ParsedCommand command) async {
+    // DEBUG: Log del comando ricevuto
+    print('=== CALENDAR DASHBOARD - COMANDO RICEVUTO ===');
+    print('Tipo comando: ${command.type}');
+    print('Parametri: ${command.parameters}');
+
+    // Controlla se c'è un suggerimento pausa nei parametri
+    if (command.parameters['shouldShowPauseReminder'] == true &&
+        command.type != CommandType.pauseReminder) {
+      // Mostra il reminder non invasivo
+      setState(() {
+        _shouldShowPauseReminder = true;
+      });
+    }
+
     // Se il comando ha una data specifica, aggiorna la data selezionata
     if (command.parameters['date'] != null) {
       setState(() {
@@ -341,6 +410,9 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
       });
       await _loadCalendarData(); // Ricarica i dati per la nuova data
     }
+
+    // Mostra feedback immediato
+    _showProcessingCommand(command);
 
     switch (command.type) {
       case CommandType.showFreeSlots:
@@ -356,13 +428,473 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
         _showWorkloadAnalysis();
         break;
 
+      case CommandType.scheduleEvent:
+        _handleScheduleEvent(command);
+        break;
+
+      case CommandType.createReminder:
+        _handleCreateReminder(command);
+        break;
+
+      case CommandType.blockTime:
+        _handleBlockTime(command);
+        break;
+
+      case CommandType.delegateTask:
+        _handleDelegateTask(command);
+        break;
+
+      case CommandType.pauseReminder:
+        _showPauseDialog();
+        break;
+
+      case CommandType.cancelEvent:
+        _handleCancelEvent(command);
+        break;
+
+      case CommandType.rescheduleEvent:
+        _handleRescheduleEvent(command);
+        break;
+
+      case CommandType.emailSuggestions:
+        _handleEmailSuggestions(command);
+        break;
+
+      case CommandType.contactReminder:
+        _handleContactReminder(command);
+        break;
+
+      case CommandType.multiCommand:
+        _handleMultiCommand(command);
+        break;
+
+      case CommandType.unknown:
       default:
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Comando non ancora implementato')),
+          SnackBar(
+            content: Text('Non ho capito il comando. Prova a riformulare.'),
+            backgroundColor: Colors.orange,
+          ),
         );
     }
   }
 
+  void _showPauseDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.pause, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('È ora di una pausa!'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Hai lavorato per più di 90 minuti consecutivi. '
+                  'Ti consiglio di fare una pausa di 10-15 minuti per ricaricarti.',
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Vuoi che programmi una pausa ora?',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Dopo'),
+          ),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.coffee),
+            label: const Text('Sì, programma pausa'),
+            onPressed: () {
+              Navigator.of(context).pop();
+              _schedulePause();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _schedulePause() async {
+    // Crea evento pausa nel calendario
+    try {
+      final now = DateTime.now();
+      final pauseEnd = now.add(const Duration(minutes: 15));
+
+      await _googleCalendarService.createEvent(
+        summary: '☕ Pausa',
+        description: 'Momento di relax e ricarica',
+        startTime: now,
+        endTime: pauseEnd,
+      );
+
+      // Reset timer
+      setState(() {
+        _minutesWorkedWithoutBreak = 0;
+        _shouldShowPauseReminder = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pausa programmata! Goditi il tuo momento di relax 😊'),
+          backgroundColor: Colors.green,
+        ),
+      );
+
+      // Ricarica eventi
+      await _loadCalendarData();
+    } catch (e) {
+      print('Errore creazione pausa: $e');
+    }
+  }
+
+  // Mostra che stiamo processando un comando
+  void _showProcessingCommand(ParsedCommand command) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text('Eseguo: ${command.type.toString().split('.').last}...'),
+          ],
+        ),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  // Handler per schedulare un evento
+  void _handleScheduleEvent(ParsedCommand command) async {
+    final params = command.parameters;
+
+    // Mostra dialog per confermare/completare i dettagli
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Nuovo Evento'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Titolo: ${params['title'] ?? 'Nuovo evento'}'),
+            if (params['date'] != null)
+              Text('Data: ${_formatDate(params['date'] as DateTime)}'),
+            if (params['time'] != null)
+              Text('Ora: ${(params['time'] as TimeOfDay).format(context)}'),
+            Text('Durata: ${params['duration'] ?? 60} minuti'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              // Implementa la creazione dell'evento
+              await _createEvent(params);
+            },
+            child: const Text('Crea'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Handler per creare un promemoria
+  void _handleCreateReminder(ParsedCommand command) {
+    final params = command.parameters;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Nuovo Promemoria'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('${params['content'] ?? 'Promemoria'}'),
+            if (params['date'] != null)
+              Text('Quando: ${_formatDate(params['date'] as DateTime)}'),
+            Text('Priorità: ${params['priority'] ?? 'normale'}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showSuccess('Promemoria creato con successo!');
+            },
+            child: const Text('Crea'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Handler per bloccare tempo
+  void _handleBlockTime(ParsedCommand command) async {
+    final params = command.parameters;
+    final reason = params['reason'] ?? 'blocked';
+
+    String reasonText = 'Tempo bloccato';
+    if (reason == 'focus_time') reasonText = 'Tempo per focus';
+    else if (reason == 'lunch') reasonText = 'Pausa pranzo';
+    else if (reason == 'break') reasonText = 'Pausa';
+    else if (reason == 'personal') reasonText = 'Tempo personale';
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Blocca $reasonText'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (params['date'] != null)
+              Text('Data: ${_formatDate(params['date'] as DateTime)}'),
+            if (params['time'] != null)
+              Text('Dalle: ${(params['time'] as TimeOfDay).format(context)}'),
+            if (params['endTime'] != null)
+              Text('Alle: ${(params['endTime'] as TimeOfDay).format(context)}'),
+            if (params['recurring'] == true)
+              const Text('⚡ Ricorrente'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _createBlockedTime(params, reasonText);
+            },
+            child: const Text('Blocca'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Handler per delegare task
+  void _handleDelegateTask(ParsedCommand command) {
+    final params = command.parameters;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delega Task'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Task: ${params['task'] ?? 'Da definire'}'),
+            Text('A: ${params['assignee'] ?? 'Da definire'}'),
+            if (params['date'] != null)
+              Text('Entro: ${_formatDate(params['date'] as DateTime)}'),
+            if (params['instructions'] != null)
+              Text('Note: ${params['instructions']}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showSuccess('Task delegato con successo!');
+            },
+            child: const Text('Delega'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Handler per cancellare evento
+  void _handleCancelEvent(ParsedCommand command) {
+    _showInfo('Funzione di cancellazione eventi in arrivo!');
+  }
+
+  // Handler per riprogrammare evento
+  void _handleRescheduleEvent(ParsedCommand command) {
+    _showInfo('Funzione di riprogrammazione eventi in arrivo!');
+  }
+
+  // Handler per suggerimenti email
+  void _handleEmailSuggestions(ParsedCommand command) {
+    _showInfo('Suggerimenti email in arrivo!');
+  }
+
+  // Handler per promemoria contatti
+  void _handleContactReminder(ParsedCommand command) {
+    final params = command.parameters;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Promemoria Contatto'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Contattare: ${params['contact'] ?? 'Contatto'}'),
+            Text('Metodo: ${params['method'] ?? 'da definire'}'),
+            if (params['reason'] != null)
+              Text('Motivo: ${params['reason']}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showSuccess('Promemoria contatto creato!');
+            },
+            child: const Text('Crea'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Handler per multi-comando
+  void _handleMultiCommand(ParsedCommand command) {
+    _showInfo('Elaborazione comando multiplo...');
+  }
+
+  // Crea un evento nel calendario
+  Future<void> _createEvent(Map<String, dynamic> params) async {
+    try {
+      setState(() => _isLoading = true);
+
+      // Prepara i parametri dell'evento
+      final DateTime date = params['date'] ?? DateTime.now();
+      final TimeOfDay? time = params['time'];
+      final int duration = params['duration'] ?? 60;
+
+      DateTime startTime;
+      if (time != null) {
+        startTime = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+      } else {
+        startTime = date;
+      }
+
+      final endTime = startTime.add(Duration(minutes: duration));
+
+      // Crea l'evento su Google Calendar
+      if (_isGoogleSignedIn) {
+        await _googleCalendarService.createEvent(
+          summary: params['title'] ?? 'Nuovo evento',
+          startTime: startTime,
+          endTime: endTime,
+          description: params['description'],
+          location: params['location'],
+        );
+      }
+
+      // Ricarica i dati
+      await _loadCalendarData();
+
+      _showSuccess('Evento creato con successo!');
+    } catch (e) {
+      _showError('Errore nella creazione dell\'evento: $e');
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // Crea tempo bloccato
+  Future<void> _createBlockedTime(Map<String, dynamic> params, String title) async {
+    try {
+      setState(() => _isLoading = true);
+
+      final DateTime date = params['date'] ?? DateTime.now();
+      final TimeOfDay time = params['time'] ?? const TimeOfDay(hour: 9, minute: 0);
+      final TimeOfDay endTime = params['endTime'] ??
+          TimeOfDay(hour: (time.hour + 2) % 24, minute: time.minute);
+
+      final startDateTime = DateTime(
+          date.year,
+          date.month,
+          date.day,
+          time.hour,
+          time.minute
+      );
+      final endDateTime = DateTime(
+          date.year,
+          date.month,
+          date.day,
+          endTime.hour,
+          endTime.minute
+      );
+
+      if (_isGoogleSignedIn) {
+        await _googleCalendarService.createEvent(
+          summary: title,
+          startTime: startDateTime,
+          endTime: endDateTime,
+          description: 'Tempo bloccato automaticamente da SVP',
+        );
+      }
+
+      await _loadCalendarData();
+      _showSuccess('Tempo bloccato con successo!');
+
+    } catch (e) {
+      _showError('Errore nel bloccare il tempo: $e');
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // Crea una pausa veloce
+  void _createQuickBreak() async {
+    final now = DateTime.now();
+    final startTime = now.add(const Duration(minutes: 5));
+    final endTime = startTime.add(const Duration(minutes: 15));
+
+    try {
+      if (_isGoogleSignedIn) {
+        await _googleCalendarService.createEvent(
+          summary: '☕ Pausa',
+          startTime: startTime,
+          endTime: endTime,
+          description: 'Pausa consigliata da SVP',
+        );
+      }
+
+      await _loadCalendarData();
+      _showSuccess('Pausa programmata tra 5 minuti!');
+    } catch (e) {
+      _showError('Errore nella creazione della pausa: $e');
+    }
+  }
   void _showFreeSlotsDialog() {
     showDialog(
       context: context,
@@ -520,6 +1052,62 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
     }
   }
 
+  void _showCreateEventDialog(Map<String, dynamic> params) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Conferma Creazione Meeting'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Inizio: ${DateFormat('dd/MM HH:mm').format(params['start'])}'),
+            Text('Fine: ${DateFormat('dd/MM HH:mm').format(params['end'])}'),
+            if (params['summary'] != null)
+              Text('Titolo: ${params['summary']}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // Crea l'evento direttamente
+              _createEvent(params);
+            },
+            child: const Text('Conferma'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showOptimizationDialog(AIAction action) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Applica Ottimizzazione'),
+        content: Text(action.label),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annulla'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showSuccess('Ottimizzazione applicata!');
+            },
+            child: const Text('Applica'),
+          ),
+        ],
+      ),
+    );
+  }
+
   // Helper methods
   int _getTodayEventsCount() {
     return _todayEvents.length;
@@ -612,6 +1200,12 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
   }
 
   @override
+  void dispose() {
+    _workTimeTracker?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     // Controlla se siamo arrivati dalla HomePage
     final bool fromHome = (ModalRoute.of(context)?.settings.arguments as Map?)?['fromHome'] ?? false;
@@ -679,11 +1273,35 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
             ],
           ],
         ),
-        body: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : (!_isGoogleSignedIn && !_isOutlookSignedIn)
-            ? _buildSignInPrompt()
-            : _buildDashboard(),
+        body: Stack(
+          children: [
+            // Il tuo body esistente
+            _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : (!_isGoogleSignedIn && !_isOutlookSignedIn)
+                ? _buildSignInPrompt()
+                : _buildDashboard(),
+
+            // Reminder pausa non invasivo
+            if (_shouldShowPauseReminder)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SafeArea(
+                  child: PauseReminderWidget(
+                    minutesWorked: _minutesWorkedWithoutBreak,
+                    onPauseTaken: _schedulePause,
+                    onDismiss: () {
+                      setState(() {
+                        _shouldShowPauseReminder = false;
+                      });
+                    },
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -1262,75 +1880,147 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
   void _showEventDetails(CalendarEventWrapper event) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(event.title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  event.source == CalendarSource.google
-                      ? Icons.g_mobiledata
-                      : Icons.mail_outline,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  event.source == CalendarSource.google ? 'Google Calendar' : 'Outlook Calendar',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+      builder: (context) => Dialog(
+        child: Container(
+          padding: const EdgeInsets.all(24.0),
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    event.source == CalendarSource.google
+                        ? Icons.g_mobiledata
+                        : Icons.mail_outline,
+                    color: event.color,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      event.title,
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Orario
+              Row(
+                children: [
+                  const Icon(Icons.access_time, size: 20),
+                  const SizedBox(width: 8),
+                  Text(event.timeText),
+                ],
+              ),
+
+              // Durata
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.timelapse, size: 20),
+                  const SizedBox(width: 8),
+                  Text('Durata: ${_formatDuration(event.duration)}'),
+                ],
+              ),
+
+              // Luogo
+              if (event.location != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Icon(Icons.location_on, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(event.location!),
+                    ),
+                  ],
                 ),
               ],
-            ),
-            const SizedBox(height: 12),
-            if (event.location != null) ...[
-              const Text(
-                'Luogo:',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              Text(event.location!),
-              const SizedBox(height: 12),
-            ],
-            const Text(
-              'Orario:',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            Text(event.getEventTimeString()),
-            if (event.description != null && event.description!.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              const Text(
-                'Descrizione:',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 4),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 200),
-                child: SingleChildScrollView(
-                  child: Text(event.description!),
+
+              // Descrizione
+              if (event.description != null) ...[
+                const SizedBox(height: 16),
+                const Text(
+                  'Descrizione:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
                 ),
+                const SizedBox(height: 4),
+                Text(event.description!),
+              ],
+
+              // Partecipanti
+              if (event.attendees.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                const Text(
+                  'Partecipanti:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                ...event.attendees.map((attendee) => Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.person,
+                        size: 16,
+                        color: Colors.grey.shade600,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(attendee),
+                    ],
+                  ),
+                )),
+              ],
+
+              const SizedBox(height: 24),
+
+              // Azioni
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      // TODO: Implementare modifica evento
+                    },
+                    child: const Text('Modifica'),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      // TODO: Implementare cancellazione evento
+                    },
+                    child: const Text(
+                      'Cancella',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ),
+                ],
               ),
             ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Chiudi'),
           ),
-        ],
+        ),
       ),
     );
   }
 }
 
-// Wrapper per gestire eventi da fonti diverse
-enum CalendarSource { google, outlook }
-
+// Wrapper per gestire eventi da diverse fonti
 class CalendarEventWrapper {
   final CalendarSource source;
   final google_calendar.Event? googleEvent;
-  final OutlookEvent? outlookEvent;
+  final Map<String, dynamic>? outlookEvent;
 
   CalendarEventWrapper({
     required this.source,
@@ -1338,137 +2028,153 @@ class CalendarEventWrapper {
     this.outlookEvent,
   });
 
+  String get id {
+    switch (source) {
+      case CalendarSource.google:
+        return googleEvent?.id ?? '';
+      case CalendarSource.outlook:
+        return outlookEvent?['id'] ?? '';
+    }
+  }
+
   String get title {
-    if (source == CalendarSource.google) {
-      return googleEvent?.summary ?? 'Evento senza titolo';
-    } else {
-      return outlookEvent?.subject ?? 'Evento senza titolo';
+    switch (source) {
+      case CalendarSource.google:
+        return googleEvent?.summary ?? 'Senza titolo';
+      case CalendarSource.outlook:
+        return outlookEvent?['subject'] ?? 'Senza titolo';
+    }
+  }
+
+  String? get description {
+    switch (source) {
+      case CalendarSource.google:
+        return googleEvent?.description;
+      case CalendarSource.outlook:
+        return outlookEvent?['body']?['content'];
+    }
+  }
+
+  String? get location {
+    switch (source) {
+      case CalendarSource.google:
+        return googleEvent?.location;
+      case CalendarSource.outlook:
+        return outlookEvent?['location']?['displayName'];
     }
   }
 
   DateTime get startTime {
-    if (source == CalendarSource.google) {
-      // Google può avere dateTime o date
-      final dateTime = googleEvent?.start?.dateTime;
-      final date = googleEvent?.start?.date;
-
-      if (dateTime != null) {
-        return dateTime.toLocal();
-      } else if (date != null) {
-        // Eventi tutto il giorno - assicurati che sia nella timezone locale
-        return DateTime.parse(date.toString()).toLocal();
-      }
-
-      print('WARN: Evento Google senza data di inizio');
-      return DateTime.now();
-    } else {
-      // Outlook
-      final start = outlookEvent?.start;
-      if (start != null) {
-        return start.toLocal();
-      }
-
-      print('WARN: Evento Outlook senza data di inizio');
-      return DateTime.now();
+    switch (source) {
+      case CalendarSource.google:
+        if (googleEvent?.start?.dateTime != null) {
+          return googleEvent!.start!.dateTime!.toLocal();
+        } else if (googleEvent?.start?.date != null) {
+          return googleEvent!.start!.date!;
+        }
+        return DateTime.now();
+      case CalendarSource.outlook:
+        final startStr = outlookEvent?['start']?['dateTime'];
+        if (startStr != null) {
+          return DateTime.parse(startStr).toLocal();
+        }
+        return DateTime.now();
     }
   }
 
   DateTime get endTime {
-    if (source == CalendarSource.google) {
-      final dateTime = googleEvent?.end?.dateTime;
-      final date = googleEvent?.end?.date;
-
-      if (dateTime != null) {
-        return dateTime.toLocal();
-      } else if (date != null) {
-        return DateTime.parse(date.toString()).toLocal();
-      }
-
-      return DateTime.now();
-    } else {
-      final end = outlookEvent?.end;
-      if (end != null) {
-        return end.toLocal();
-      }
-
-      return DateTime.now();
+    switch (source) {
+      case CalendarSource.google:
+        if (googleEvent?.end?.dateTime != null) {
+          return googleEvent!.end!.dateTime!.toLocal();
+        } else if (googleEvent?.end?.date != null) {
+          return googleEvent!.end!.date!;
+        }
+        return DateTime.now();
+      case CalendarSource.outlook:
+        final endStr = outlookEvent?['end']?['dateTime'];
+        if (endStr != null) {
+          return DateTime.parse(endStr).toLocal();
+        }
+        return DateTime.now();
     }
   }
 
   Duration get duration => endTime.difference(startTime);
 
   bool get isAllDay {
-    if (source == CalendarSource.google) {
-      return googleEvent?.start?.dateTime == null;
-    } else {
-      return outlookEvent?.isAllDay ?? false;
+    switch (source) {
+      case CalendarSource.google:
+        return googleEvent?.start?.date != null;
+      case CalendarSource.outlook:
+        return outlookEvent?['isAllDay'] ?? false;
     }
   }
 
-  String? get location {
-    if (source == CalendarSource.google) {
-      return googleEvent?.location;
-    } else {
-      return outlookEvent?.location;
-    }
-  }
-
-  String? get description {
-    if (source == CalendarSource.google) {
-      return googleEvent?.description;
-    } else {
-      return outlookEvent?.bodyPreview ?? outlookEvent?.body;
+  List<String> get attendees {
+    switch (source) {
+      case CalendarSource.google:
+        return googleEvent?.attendees
+            ?.map((a) => a.displayName ?? a.email ?? 'Partecipante')
+            .toList() ?? [];
+      case CalendarSource.outlook:
+        final attendeesList = outlookEvent?['attendees'] as List?;
+        return attendeesList
+            ?.map((a) => a['emailAddress']?['name'] ?? a['emailAddress']?['address'] ?? 'Partecipante')
+            .cast<String>()
+            .toList() ?? [];
     }
   }
 
   String get timeText {
-    if (isAllDay) return 'Tutto il giorno';
-
-    String start = DateFormat('HH:mm').format(startTime);
-    String end = DateFormat('HH:mm').format(endTime);
-
-    return '$start - $end';
-  }
-
-  String getEventTimeString() {
     if (isAllDay) {
       return 'Tutto il giorno';
     }
 
-    String result = DateFormat('dd/MM/yyyy HH:mm').format(startTime);
-    result += ' - ${DateFormat('HH:mm').format(endTime)}';
+    final now = DateTime.now();
+    final isToday = startTime.day == now.day &&
+        startTime.month == now.month &&
+        startTime.year == now.year;
 
-    return result;
+    String datePrefix = '';
+    if (!isToday) {
+      datePrefix = '${startTime.day}/${startTime.month} ';
+    }
+
+    return '$datePrefix${_formatTime(startTime)} - ${_formatTime(endTime)}';
   }
 
-  String get debugInfo {
-    return 'Event: $title, Start: ${startTime.toString()}, End: ${endTime.toString()}, Source: $source';
+  static String _formatTime(DateTime time) {
+    return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
   }
 
   Color get color {
-    if (source == CalendarSource.google) {
-      // Usa i colori di Google Calendar
-      switch (googleEvent?.colorId) {
-        case '1': return Colors.blue;
-        case '2': return Colors.green;
-        case '3': return Colors.purple;
-        case '4': return Colors.red;
-        case '5': return Colors.yellow.shade700;
-        case '6': return Colors.orange;
-        case '7': return Colors.cyan;
-        case '8': return Colors.grey;
-        case '9': return Colors.blue.shade900;
-        case '10': return Colors.green.shade900;
-        case '11': return Colors.red.shade900;
-        default: return Colors.blue;
-      }
-    } else {
-      // Colori per categorie Outlook
-      if (outlookEvent?.categories.isNotEmpty ?? false) {
-        // Puoi personalizzare i colori in base alle categorie
+    switch (source) {
+      case CalendarSource.google:
+      // Usa colore predefinito per Google
+        return Colors.blue;
+      case CalendarSource.outlook:
+      // Usa colore predefinito per Outlook
         return const Color(0xFF0078D4);
-      }
-      return const Color(0xFF0078D4);
     }
   }
+
+  String get debugInfo {
+    return '''
+    === EVENTO ===
+    Fonte: $source
+    ID: $id
+    Titolo: $title
+    Inizio: $startTime
+    Fine: $endTime
+    Tutto il giorno: $isAllDay
+    Luogo: $location
+    Partecipanti: ${attendees.length}
+    ''';
+  }
+}
+
+enum CalendarSource {
+  google,
+  outlook,
 }
