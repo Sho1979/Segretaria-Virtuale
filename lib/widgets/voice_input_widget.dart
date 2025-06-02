@@ -192,6 +192,7 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
         });
       }
     } catch (e) {
+      print('Errore processamento comando: $e');
       _showError('Errore nel processare il comando');
     }
   }
@@ -237,10 +238,90 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
     );
   }
 
+  /// Widget per i pulsanti delle azioni rapide
+  Widget _buildQuickActionButtons() {
+    return Container(
+      height: 40,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        children: [
+          _buildActionChip(
+            icon: Icons.event_available,
+            label: 'Slot liberi',
+            onPressed: () => _processCommand('mostra slot liberi oggi', InputType.text),
+          ),
+          const SizedBox(width: 8),
+          _buildActionChip(
+            icon: Icons.today,
+            label: 'Riepilogo oggi',
+            onPressed: () => _processCommand('cosa ho oggi', InputType.text),
+          ),
+          const SizedBox(width: 8),
+          _buildActionChip(
+            icon: Icons.add_alarm,
+            label: 'Nuovo promemoria',
+            onPressed: () => _processCommand('crea promemoria', InputType.text),
+          ),
+          const SizedBox(width: 8),
+          _buildActionChip(
+            icon: Icons.event,
+            label: 'Nuovo evento',
+            onPressed: () => _processCommand('crea nuovo evento', InputType.text),
+          ),
+          const SizedBox(width: 8),
+          _buildActionChip(
+            icon: Icons.analytics,
+            label: 'Analisi carico',
+            onPressed: () => _processCommand('analizza carico lavoro oggi', InputType.text),
+          ),
+          const SizedBox(width: 8),
+          _buildActionChip(
+            icon: Icons.block,
+            label: 'Blocca tempo',
+            onPressed: () => _processCommand('blocca tempo per focus', InputType.text),
+          ),
+          const SizedBox(width: 8),
+          _buildActionChip(
+            icon: Icons.person_add,
+            label: 'Delega task',
+            onPressed: () => _processCommand('delega task', InputType.text),
+          ),
+          const SizedBox(width: 8),
+          _buildActionChip(
+            icon: Icons.free_breakfast,
+            label: 'Pausa',
+            onPressed: () => _processCommand('ricordami di fare una pausa', InputType.text),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Widget per un singolo action chip
+  Widget _buildActionChip({
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+  }) {
+    return ActionChip(
+      avatar: Icon(icon, size: 18),
+      label: Text(label),
+      onPressed: onPressed,
+      backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+      labelStyle: TextStyle(
+        color: Theme.of(context).colorScheme.onSecondaryContainer,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
+        // Pulsanti azioni rapide - NUOVA SEZIONE
+        _buildQuickActionButtons(),
+
         // Area suggerimenti predittivi
         FutureBuilder<List<String>>(
           future: _aiService.getPredictiveSuggestions(),
@@ -265,6 +346,10 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
                         _textController.text = suggestion;
                         _processCommand(suggestion, InputType.text);
                       },
+                      backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
+                      labelStyle: TextStyle(
+                        color: Theme.of(context).colorScheme.onTertiaryContainer,
+                      ),
                     ),
                   );
                 },
